@@ -1,10 +1,9 @@
-package com.yourpackage.game
+package com.trigger.detective
 
 import android.content.Context
 import android.graphics.*
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import androidx.compose.ui.graphics.Color
 import com.trigger.detective.R
 import com.trigger.detective.data.Detective
 import kotlin.coroutines.coroutineContext
@@ -17,7 +16,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     // Coroutine Game Loop
     // ==============================
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var gameJob: Job? = null
 
     // ==============================
@@ -27,8 +26,8 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     val player = Detective(
         x = 200f,
         y = 200f,
-        width = 200f,
-        height = 200f
+        width = 180f,
+        height = 220f
     )
 
     // ==============================
@@ -37,14 +36,22 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     private var detectiveBitmap: Bitmap
 
-    private var rows = 4
-    private var cols = 4
+    companion object {
+        private const val SPRITE_ROWS = 4
+        private const val SPRITE_COLS = 4
+
+        private const val DIRECTION_DOWN = 0
+        private const val DIRECTION_RIGHT = 1
+        private const val DIRECTION_UP = 2
+        private const val DIRECTION_LEFT = 3
+    }
+
 
     private var frameWidth = 0
     private var frameHeight = 0
 
     private var currentFrame = 0
-    private var currentRow = 0
+    private var currentRow = DIRECTION_DOWN
 
     private var frameTimer = 0L
     private val frameDelay = 150L
@@ -61,8 +68,8 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
             R.drawable.detective_sheet
         )
 
-        frameWidth = detectiveBitmap.width / cols
-        frameHeight = detectiveBitmap.height / rows
+        frameWidth = detectiveBitmap.width / SPRITE_COLS
+        frameHeight = detectiveBitmap.height / SPRITE_ROWS
     }
 
     // ==============================
@@ -72,14 +79,17 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private suspend fun gameLoop() {
         val targetFrameTime = 16L // ~60 FPS
 
+        var lastFrameTime = System.currentTimeMillis()
+
         while (coroutineContext.isActive) {
+            val currentTime = System.currentTimeMillis()
+            val deltaTime = currentTime - lastFrameTime
+            lastFrameTime = currentTime
 
-            val startTime = System.currentTimeMillis()
-
-            update()
+            update(deltaTime)
             drawGame()
 
-            val frameTime = System.currentTimeMillis() - startTime
+            val frameTime = System.currentTimeMillis() - currentTime
             val sleepTime = targetFrameTime - frameTime
 
             if (sleepTime > 0) {
@@ -92,7 +102,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     // Update Logic
     // ==============================
 
-    private fun update() {
+    private fun update(deltaTime: Long) {
 
         // Move player
         player.x += player.velocityX
@@ -104,20 +114,20 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
         // Determine direction (priority to strongest axis)
         if (abs(player.velocityX) > abs(player.velocityY)) {
-            if (player.velocityX > 0) currentRow = 1      // Right
-            else if (player.velocityX < 0) currentRow = 3 // Left
+            if (player.velocityX > 0) currentRow = DIRECTION_RIGHT
+            else if (player.velocityX < 0) currentRow = DIRECTION_LEFT
         } else {
-            if (player.velocityY > 0) currentRow = 0      // Down
-            else if (player.velocityY < 0) currentRow = 2 // Up
+            if (player.velocityY > 0) currentRow = DIRECTION_DOWN
+            else if (player.velocityY < 0) currentRow = DIRECTION_UP
         }
 
         // Animate only when moving
         if (player.velocityX != 0f || player.velocityY != 0f) {
 
-            frameTimer += 16
+            frameTimer += deltaTime
 
             if (frameTimer >= frameDelay) {
-                currentFrame = (currentFrame + 1) % cols
+                currentFrame = (currentFrame + 1) % SPRITE_COLS
                 frameTimer = 0
             }
 
