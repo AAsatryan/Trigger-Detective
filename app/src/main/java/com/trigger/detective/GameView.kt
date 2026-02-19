@@ -1,14 +1,23 @@
 package com.trigger.detective
 
 import android.content.Context
-import android.graphics.*
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import com.trigger.detective.R
 import com.trigger.detective.data.Detective
 import kotlin.coroutines.coroutineContext
-import kotlinx.coroutines.*
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
 
@@ -16,8 +25,14 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     // Coroutine Game Loop
     // ==============================
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var gameJob: Job? = null
+
+    // ==============================
+    // Paint (reused - avoid reallocation)
+    // ==============================
+
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     // ==============================
     // Player
@@ -34,7 +49,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     // Sprite Sheet
     // ==============================
 
-    private var detectiveBitmap: Bitmap
+    private val detectiveBitmap: Bitmap
 
     companion object {
         private const val SPRITE_ROWS = 4
@@ -44,21 +59,22 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         private const val DIRECTION_RIGHT = 1
         private const val DIRECTION_UP = 2
         private const val DIRECTION_LEFT = 3
+
+        private const val TARGET_FPS = 60
+        private const val FRAME_DELAY = 150L
     }
 
-
-    private var frameWidth = 0
-    private var frameHeight = 0
+    private val frameWidth: Int
+    private val frameHeight: Int
 
     private var currentFrame = 0
     private var currentRow = DIRECTION_DOWN
 
-    private var frameTimer = 0L
-    private val frameDelay = 150L
+    private var animationTimer = 0L
 
-    // ==============================
-    // Init
-    // ==============================
+    // Reuse rect objects (performance optimization)
+    private val srcRect = Rect()
+    private val destRect = Rect()
 
     init {
         holder.addCallback(this)
@@ -77,29 +93,28 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     // ==============================
 
     private suspend fun gameLoop() {
-        val targetFrameTime = 16L // ~60 FPS
 
-        var lastFrameTime = System.currentTimeMillis()
+        val frameTime = 1000L / TARGET_FPS
+        var lastTime = System.currentTimeMillis()
 
         while (coroutineContext.isActive) {
-            val currentTime = System.currentTimeMillis()
-            val deltaTime = currentTime - lastFrameTime
-            lastFrameTime = currentTime
 
-            update(deltaTime)
-            drawGame()
+            val now = System.currentTimeMillis()
+            val delta = now - lastTime
+            lastTime = now
 
-            val frameTime = System.currentTimeMillis() - currentTime
-            val sleepTime = targetFrameTime - frameTime
+            update(delta)
+            render()
 
-            if (sleepTime > 0) {
-                delay(sleepTime)
-            }
+            val workTime = System.currentTimeMillis() - now
+            val sleep = frameTime - workTime
+
+            if (sleep > 0) delay(sleep)
         }
     }
 
     // ==============================
-    // Update Logic
+    // Update
     // ==============================
 
     private fun update(deltaTime: Long) {
@@ -108,66 +123,76 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         player.x += player.velocityX
         player.y += player.velocityY
 
-        // Keep inside screen bounds
+        // Clamp inside screen
         player.x = player.x.coerceIn(0f, width - player.width)
         player.y = player.y.coerceIn(0f, height - player.height)
 
-        // Determine direction (priority to strongest axis)
+        updateDirection()
+        updateAnimation(deltaTime)
+    }
+
+    private fun updateDirection() {
+
         if (abs(player.velocityX) > abs(player.velocityY)) {
-            if (player.velocityX > 0) currentRow = DIRECTION_RIGHT
-            else if (player.velocityX < 0) currentRow = DIRECTION_LEFT
+            when {
+                player.velocityX > 0 -> currentRow = DIRECTION_RIGHT
+                player.velocityX < 0 -> currentRow = DIRECTION_LEFT
+            }
         } else {
-            if (player.velocityY > 0) currentRow = DIRECTION_DOWN
-            else if (player.velocityY < 0) currentRow = DIRECTION_UP
+            when {
+                player.velocityY > 0 -> currentRow = DIRECTION_DOWN
+                player.velocityY < 0 -> currentRow = DIRECTION_UP
+            }
+        }
+    }
+
+    private fun updateAnimation(deltaTime: Long) {
+
+        val moving = player.velocityX != 0f || player.velocityY != 0f
+
+        if (!moving) {
+            currentFrame = 0
+            return
         }
 
-        // Animate only when moving
-        if (player.velocityX != 0f || player.velocityY != 0f) {
+        animationTimer += deltaTime
 
-            frameTimer += deltaTime
-
-            if (frameTimer >= frameDelay) {
-                currentFrame = (currentFrame + 1) % SPRITE_COLS
-                frameTimer = 0
-            }
-
-        } else {
-            currentFrame = 0 // idle frame
+        if (animationTimer >= FRAME_DELAY) {
+            currentFrame = (currentFrame + 1) % SPRITE_COLS
+            animationTimer = 0
         }
     }
 
     // ==============================
-    // Draw
+    // Render
     // ==============================
 
-    private fun drawGame() {
+    private fun render() {
 
         if (!holder.surface.isValid) return
 
-        val canvas = holder.lockCanvas()
+        val canvas = holder.lockCanvas() ?: return
 
         try {
+            canvas.drawColor(Color.WHITE)
 
-            // Background
-            canvas.drawColor(android.graphics.Color.WHITE)
-
-            // Source frame from sprite sheet
-            val src = Rect(
+            // Calculate source rectangle
+            srcRect.set(
                 currentFrame * frameWidth,
                 currentRow * frameHeight,
                 (currentFrame + 1) * frameWidth,
                 (currentRow + 1) * frameHeight
             )
 
-            // Destination on screen
-            val dest = Rect(
+            // Calculate destination rectangle
+            destRect.set(
                 player.x.toInt(),
                 player.y.toInt(),
                 (player.x + player.width).toInt(),
                 (player.y + player.height).toInt()
             )
 
-            canvas.drawBitmap(detectiveBitmap, src, dest, null)
+            canvas.drawBitmap(detectiveBitmap, srcRect, destRect, paint)
 
         } finally {
             holder.unlockCanvasAndPost(canvas)
